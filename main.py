@@ -3,7 +3,7 @@ from gurobipy import *
 
 class ModelData:
     # Class to hold an instance of the nominal problem.
-    # Default initializations are set to the current example in the paper.
+    # Default initializations are set to Example 1 in our paper.
     def __init__(self,
                   n_dim=1, # dimension of x variable
                   c=np.array([1]),
@@ -75,60 +75,162 @@ class ModelData:
         print("D:", self.D)
         print("b:", self.b)
 
-def solve_nominal(data):
-    # Constructed assuming x, y have non-negativity constraints.
-    # Initialize Model
-    nominal=Model()
-    # Add variables x, y, lambda, alpha
-    x = nominal.addMVar(data.n_dim, name="x")
-    y = nominal.addMVar(data.m_dim, name="y")
-    lam = nominal.addMVar(data.l_dim, name="lambda")
-    alpha = nominal.addMVar(data.l_dim, vtype=GRB.BINARY, name="alpha")
-    nominal.update()
-    # Set objective function
-    nominal.setObjective(data.c @ x + data.d @ y, GRB.MINIMIZE)
-    # Add constraints
-    nominal.addConstr(data.A @ x + data.B @ y >= data.a)
-    nominal.addConstr(data.C @ x + data.D @ y >= data.b)
-    nominal.addConstr(data.D.transpose() @ lam <= data.g)
-    # complimentary slackness - lam[i] == 0 if alpha[i] == 0 added individually
-    for i in range(data.l_dim):
-        nominal.addConstr(lam[i] <= data.M * alpha[i])
-        nominal.addConstr(lam[i] >= -data.M * alpha[i])
-    slack_expr = data.C @ x + data.D @ y - data.b
-    M_mat = np.eye(data.l_dim) * data.M
-    M1 = M_mat @ np.ones(data.l_dim) - M_mat @ alpha
-    M2 = -M_mat @ np.ones(data.l_dim) + M_mat @ alpha
-    nominal.addConstr(slack_expr <= M1)
-    nominal.addConstr(slack_expr >= M2)
-    # FOR EXAMPLE - add constraint to fix x
-    nominal.addConstr(x[0] == 0)
-    nominal.update()
-    nominal.write("nominal.lp")
-    nominal.optimize()
-    if nominal.Status == GRB.Status.OPTIMAL:
+def return_beck_example():
+    # Return an instance matching Example 1 in the Beck paper.
+    return ModelData(n_dim=1,
+                  c=np.array([1]),
+                  f=np.array([0]),
+                  m_dim=1,
+                  d=np.array([-10]),
+                  g=np.array([1]),
+                  k_dim=2,
+                  A=np.array([[1], [-1]]),
+                  B=np.array([[-4], [-2]]),
+                  a=np.array([-11, -13]),
+                  l_dim=2,
+                  C=np.array([[2], [-5]]),
+                  D=np.array([[1], [4]]),
+                  b=np.array([5, -30]),
+                  M=50)
+
+def print_solution(model, data, x, y, dual=None):
+    if model.Status == GRB.Status.OPTIMAL:
         print("x:")
         for i in range(data.n_dim):
             print("   ", i, ":", x[i].x)
         print("y:")
         for i in range(data.m_dim):
             print("   ", i, ":", y[i].x)
-        print("lambda:")
-        for i in range(data.l_dim):
-            print("   ", i, ":", lam[i].x)
+        if dual:
+            print("dual:")
+            for i in range(data.l_dim):
+                print("   ", i, ":", dual[i].x)
 
-def solve_beck_optimistic(model_data):
-    pass
+def construct_base_model(model, data):
+    # Construct the part of the model that is common to all formulations/problems.
+    # Add variables x and y, add objective function and primal upper constraint.
+    x = model.addMVar(data.n_dim, name="x")
+    y = model.addMVar(data.m_dim, name="y")
+    # Set objective function
+    model.setObjective(data.c @ x + data.d @ y, GRB.MINIMIZE)
+    # Add constraint
+    model.addConstr(data.A @ x + data.B @ y >= data.a)
+    return x, y
+
+def solve_nominal(data):
+    # Constructed assuming x, y have non-negativity constraints.
+    # Initialize Model
+    nominal=Model()
+    x, y = construct_base_model(nominal, data)
+    # Add variables gamma, alpha, beta
+    gamma = nominal.addMVar(data.l_dim, name="gamma")
+    alpha = nominal.addMVar(data.l_dim, vtype=GRB.BINARY, name="alpha")
+    beta = nominal.addMVar(data.m_dim, vtype=GRB.BINARY, name="beta")
+    nominal.addConstr(data.C @ x + data.D @ y >= data.b)
+    nominal.addConstr(data.D.transpose() @ gamma <= data.g)
+    # complimentary slackness - gamma[i] == 0 if alpha[i] == 0 added individually
+    for i in range(data.l_dim):
+        nominal.addConstr(gamma[i] <= data.M * alpha[i])
+    slack_expr = data.C @ x + data.D @ y - data.b
+    M_mat = np.eye(data.l_dim) * data.M
+    M1 = M_mat @ np.ones(data.l_dim) - M_mat @ alpha
+    nominal.addConstr(slack_expr <= M1)
+    # complimentary slackness - y[j] == 0 if beta[j] == 0 added individually
+    for j in range(data.m_dim):
+        nominal.addConstr(y[j] <= data.M * beta[j])
+    slack_expr = np.transpose(data.D) @ gamma - data.g
+    M_mat = np.eye(data.m_dim) * data.M
+    M2 = -M_mat @ np.ones(data.m_dim) + M_mat @ beta
+    nominal.addConstr(slack_expr >= M2)
+    nominal.update()
+    nominal.write("nominal.lp")
+    nominal.optimize()
+    print_solution(nominal, data, x, y)
+
+def solve_beck_optimistic(model_data, P):
+    # Constructed assuming x, y have non-negativity constraints.
+    # Initialize Model
+    boptimistic=Model()
+    x, y = construct_base_model(boptimistic, data)
+    # Add variables lambda, alpha
+    lam = boptimistic.addMVar(data.l_dim, name="lambda")
+    alpha = boptimistic.addMVar(data.l_dim, vtype=GRB.BINARY, name="alpha")
+    boptimistic.addConstr(data.C @ x + data.D @ y >= data.b)
+    boptimistic.addConstr(data.D.transpose() @ lam <= data.g)
+    # complimentary slackness - lam[i] == 0 if alpha[i] == 0 added individually
+    for i in range(data.l_dim):
+        boptimistic.addConstr(lam[i] <= data.M * alpha[i])
+        boptimistic.addConstr(lam[i] >= -data.M * alpha[i])
+    slack_expr = data.C @ x + data.D @ y - data.b
+    M_mat = np.eye(data.l_dim) * data.M
+    M1 = M_mat @ np.ones(data.l_dim) - M_mat @ alpha
+    M2 = -M_mat @ np.ones(data.l_dim) + M_mat @ alpha
+    boptimistic.addConstr(slack_expr <= M1)
+    boptimistic.addConstr(slack_expr >= M2)
+    boptimistic.update()
+    boptimistic.write("boptimistic.lp")
+    boptimistic.optimize()
+    print_solution(boptimistic, data, x, y)
 
 def solve_beck_pessimistic(model_data):
+    # Constructed assuming x, y have non-negativity constraints.
+    # Initialize Model
+    bpessimistic=Model()
+    x, y = construct_base_model(bpessimistic, data)
+    # Add variables lambda, alpha
+    lam = bpessimistic.addMVar(data.l_dim, name="lambda")
+    alpha = bpessimistic.addMVar(data.l_dim, vtype=GRB.BINARY, name="alpha")
+    bpessimistic.addConstr(data.C @ x + data.D @ y >= data.b)
+    bpessimistic.addConstr(data.D.transpose() @ lam <= data.g)
+    # complimentary slackness - lam[i] == 0 if alpha[i] == 0 added individually
+    for i in range(data.l_dim):
+        bpessimistic.addConstr(lam[i] <= data.M * alpha[i])
+        bpessimistic.addConstr(lam[i] >= -data.M * alpha[i])
+    slack_expr = data.C @ x + data.D @ y - data.b
+    M_mat = np.eye(data.l_dim) * data.M
+    M1 = M_mat @ np.ones(data.l_dim) - M_mat @ alpha
+    M2 = -M_mat @ np.ones(data.l_dim) + M_mat @ alpha
+    bpessimistic.addConstr(slack_expr <= M1)
+    bpessimistic.addConstr(slack_expr >= M2)
+    bpessimistic.update()
+    bpessimistic.write("bpessimistic.lp")
+    bpessimistic.optimize()
+    print_solution(bpessimistic, data, x, y)
     pass
 
 def solve_wrabetz_pessimistic(model_data):
+    # Constructed assuming x, y have non-negativity constraints.
+    # Initialize Model
+    wpessimistic=Model()
+    x, y = construct_base_model(wpessimistic, data)
+    # Add variables lambda, alpha
+    lam = wpessimistic.addMVar(data.l_dim, name="lambda")
+    alpha = wpessimistic.addMVar(data.l_dim, vtype=GRB.BINARY, name="alpha")
+    wpessimistic.addConstr(data.C @ x + data.D @ y >= data.b)
+    wpessimistic.addConstr(data.D.transpose() @ lam <= data.g)
+    # complimentary slackness - lam[i] == 0 if alpha[i] == 0 added individually
+    for i in range(data.l_dim):
+        wpessimistic.addConstr(lam[i] <= data.M * alpha[i])
+        wpessimistic.addConstr(lam[i] >= -data.M * alpha[i])
+    slack_expr = data.C @ x + data.D @ y - data.b
+    M_mat = np.eye(data.l_dim) * data.M
+    M1 = M_mat @ np.ones(data.l_dim) - M_mat @ alpha
+    M2 = -M_mat @ np.ones(data.l_dim) + M_mat @ alpha
+    wpessimistic.addConstr(slack_expr <= M1)
+    wpessimistic.addConstr(slack_expr >= M2)
+    wpessimistic.update()
+    wpessimistic.write("wpessimistic.lp")
+    wpessimistic.optimize()
+    print_solution(wpessimistic, data, x, y)
     pass
 
 def main():
     example = ModelData()
-    solve_nominal(example)
+    beck = return_beck_example()
+    solve_nominal(beck)
+    beck.log_data()
+    P = []
+    #solve_beck_optimistic(example, P)
 
 if __name__=="__main__":
     main()
