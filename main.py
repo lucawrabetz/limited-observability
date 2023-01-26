@@ -93,6 +93,29 @@ def return_beck_example():
                   b=np.array([5, -30]),
                   M=50)
 
+def return_beck_simple():
+    # Return an instance matching Example 1 in the Beck paper.
+    return ModelData(n_dim=1,
+                  c=np.array([1]),
+                  f=np.array([0]),
+                  m_dim=1,
+                  d=np.array([-10]),
+                  g=np.array([1]),
+                  k_dim=2,
+                  A=np.array([[1], [-1]]),
+                  B=np.array([[-4], [-2]]),
+                  a=np.array([-11, -13]),
+                  l_dim=1,
+                  C=np.array([[2]]),
+                  D=np.array([[1]]),
+                  b=np.array([5]),
+                  M=50)
+
+def return_P(n_dim, val):
+    # P should be a matrix of n rows and 1 columns.
+    # Returns a matrix of this form with a single value.
+    return np.full((n_dim,), val)
+
 def print_solution(model, data, x, y, dual=None):
     if model.Status == GRB.Status.OPTIMAL:
         print("x:")
@@ -117,6 +140,10 @@ def construct_base_model(model, data):
     model.addConstr(data.A @ x + data.B @ y >= data.a)
     return x, y
 
+def add_optimistic_reactionset():
+    # Add KKT constraints for the standard optimistic reaction set
+    pass
+
 def solve_nominal(data):
     # Constructed assuming x, y have non-negativity constraints.
     # Initialize Model
@@ -128,14 +155,14 @@ def solve_nominal(data):
     beta = nominal.addMVar(data.m_dim, vtype=GRB.BINARY, name="beta")
     nominal.addConstr(data.C @ x + data.D @ y >= data.b)
     nominal.addConstr(data.D.transpose() @ gamma <= data.g)
-    # complimentary slackness - gamma[i] == 0 if alpha[i] == 0 added individually
+    # complementary slackness - gamma[i] == 0 if alpha[i] == 0 added individually
     for i in range(data.l_dim):
         nominal.addConstr(gamma[i] <= data.M * alpha[i])
     slack_expr = data.C @ x + data.D @ y - data.b
     M_mat = np.eye(data.l_dim) * data.M
     M1 = M_mat @ np.ones(data.l_dim) - M_mat @ alpha
     nominal.addConstr(slack_expr <= M1)
-    # complimentary slackness - y[j] == 0 if beta[j] == 0 added individually
+    # complementary slackness - y[j] == 0 if beta[j] == 0 added individually
     for j in range(data.m_dim):
         nominal.addConstr(y[j] <= data.M * beta[j])
     slack_expr = np.transpose(data.D) @ gamma - data.g
@@ -147,56 +174,110 @@ def solve_nominal(data):
     nominal.optimize()
     print_solution(nominal, data, x, y)
 
-def solve_beck_optimistic(model_data, P):
+def solve_beck_optimistic(data, P):
     # Constructed assuming x, y have non-negativity constraints.
+    # Simplified reformulation of limited observability assuming C >= 0, n_dim = 1.
     # Initialize Model
     boptimistic=Model()
     x, y = construct_base_model(boptimistic, data)
-    # Add variables lambda, alpha
-    lam = boptimistic.addMVar(data.l_dim, name="lambda")
+    # Add variables gamma, alpha, beta
+    gamma = boptimistic.addMVar(data.l_dim, name="gamma")
     alpha = boptimistic.addMVar(data.l_dim, vtype=GRB.BINARY, name="alpha")
-    boptimistic.addConstr(data.C @ x + data.D @ y >= data.b)
-    boptimistic.addConstr(data.D.transpose() @ lam <= data.g)
-    # complimentary slackness - lam[i] == 0 if alpha[i] == 0 added individually
+    beta = boptimistic.addMVar(data.m_dim, vtype=GRB.BINARY, name="beta")
+    boptimistic.addConstr(data.C @ x - data.C @ P + data.D @ y >= data.b)
+    boptimistic.addConstr(data.D.transpose() @ gamma <= data.g)
+    # complementary slackness - gamma[i] == 0 if alpha[i] == 0 added individually
     for i in range(data.l_dim):
-        boptimistic.addConstr(lam[i] <= data.M * alpha[i])
-        boptimistic.addConstr(lam[i] >= -data.M * alpha[i])
-    slack_expr = data.C @ x + data.D @ y - data.b
+        boptimistic.addConstr(gamma[i] <= data.M * alpha[i])
+    slack_expr = data.C @ x - data.C @ P + data.D @ y - data.b
     M_mat = np.eye(data.l_dim) * data.M
     M1 = M_mat @ np.ones(data.l_dim) - M_mat @ alpha
-    M2 = -M_mat @ np.ones(data.l_dim) + M_mat @ alpha
     boptimistic.addConstr(slack_expr <= M1)
+    # complementary slackness - y[j] == 0 if beta[j] == 0 added individually
+    for j in range(data.m_dim):
+        boptimistic.addConstr(y[j] <= data.M * beta[j])
+    slack_expr = np.transpose(data.D) @ gamma - data.g
+    M_mat = np.eye(data.m_dim) * data.M
+    M2 = -M_mat @ np.ones(data.m_dim) + M_mat @ beta
     boptimistic.addConstr(slack_expr >= M2)
     boptimistic.update()
     boptimistic.write("boptimistic.lp")
     boptimistic.optimize()
     print_solution(boptimistic, data, x, y)
 
-def solve_beck_pessimistic(model_data):
+def solve_beck_pessimistic(data, P):
     # Constructed assuming x, y have non-negativity constraints.
+    # Simplified reformulation of limited observability assuming C >= 0, n_dim = 1.
     # Initialize Model
     bpessimistic=Model()
-    x, y = construct_base_model(bpessimistic, data)
-    # Add variables lambda, alpha
-    lam = bpessimistic.addMVar(data.l_dim, name="lambda")
+    # Add non-negative continuous variables.
+    x = bpessimistic.addMVar(data.n_dim, name="x")
+    y = bpessimistic.addMVar(data.m_dim, name="y")
+    ybar = bpessimistic.addMVar(data.m_dim, name="ybar")
+    gamma = bpessimistic.addMVar(data.l_dim, name="gamma")
+    pi1 = bpessimistic.addMVar(data.l_dim, name="pi1")
+    pi2 = bpessimistic.addMVar(1, name="pi2")
+    # Add binary variables.
+    upi2 = bpessimistic.addMVar(1, vtype=GRB.BINARY, name="upi2")
     alpha = bpessimistic.addMVar(data.l_dim, vtype=GRB.BINARY, name="alpha")
-    bpessimistic.addConstr(data.C @ x + data.D @ y >= data.b)
-    bpessimistic.addConstr(data.D.transpose() @ lam <= data.g)
-    # complimentary slackness - lam[i] == 0 if alpha[i] == 0 added individually
+    upi1 = bpessimistic.addMVar(data.l_dim, vtype=GRB.BINARY, name="upi1")
+    beta = bpessimistic.addMVar(data.m_dim, vtype=GRB.BINARY, name="beta")
+    uybar = bpessimistic.addMVar(data.m_dim, vtype=GRB.BINARY, name="uybar")
+    bpessimistic.update()
+    # Set objective function
+    bpessimistic.setObjective(data.c @ x + data.d @ ybar, GRB.MINIMIZE)
+    # Add constraints
+    # Upper level Constraint
+    bpessimistic.addConstr(data.A @ x + data.B @ ybar >= data.a)
+    # KKT Conditions for pessimistic reaction set
+    # primal feasibility
+    bpessimistic.addConstr(data.C @ x -data.C @ P + data.D @ ybar >= data.b)
+    bpessimistic.addConstr(data.g @ ybar <= data.g @ y)
+    # dual feasibility
+    bpessimistic.addConstr(data.g @ pi2 - data.D.transpose() @ pi1 >= data.d)
+    # complementary slackness - pi1
     for i in range(data.l_dim):
-        bpessimistic.addConstr(lam[i] <= data.M * alpha[i])
-        bpessimistic.addConstr(lam[i] >= -data.M * alpha[i])
-    slack_expr = data.C @ x + data.D @ y - data.b
+        bpessimistic.addConstr(pi1[i] <= data.M * upi1[i])
+    slack_expr = data.C @ x - data.C @ P + data.D @ ybar - data.b
+    M_mat = np.eye(data.l_dim) * data.M
+    M1 = M_mat @ np.ones(data.l_dim) - M_mat @ upi1
+    bpessimistic.addConstr(slack_expr <= M1)
+    # complementary slackness - pi2
+    bpessimistic.addConstr(pi2[0] <= data.M * upi2[0])
+    slack_expr = data.g @ ybar - data.g @ y
+    M_mat = np.eye(1) * data.M
+    M3 = -M_mat @ np.ones(1) + M_mat @ upi2
+    bpessimistic.addConstr(slack_expr >= M3)
+    # complementary slackness - ybar
+    for i in range(data.m_dim):
+        bpessimistic.addConstr(ybar[i] <= data.M * uybar[i])
+    slack_expr = data.g @ pi2 - data.D.transpose() @ pi1
+    M_mat = np.eye(data.m_dim) * data.M
+    M2 = M_mat @ np.ones(data.l_dim) - M_mat @ uybar
+    bpessimistic.addConstr(slack_expr <= M2)
+    # KKT Conditions for optimistic reaction set
+    # Primal feasibility
+    bpessimistic.addConstr(data.C @ x -data.C @ P + data.D @ y >= data.b)
+    # Dual feasibility
+    bpessimistic.addConstr(data.D.transpose() @ gamma <= data.g)
+    # complementary slackness - gamma[i] == 0 if alpha[i] == 0 added individually
+    for i in range(data.l_dim):
+        bpessimistic.addConstr(gamma[i] <= data.M * alpha[i])
+    slack_expr = data.C @ x - data.C @ P + data.D @ y - data.b
     M_mat = np.eye(data.l_dim) * data.M
     M1 = M_mat @ np.ones(data.l_dim) - M_mat @ alpha
-    M2 = -M_mat @ np.ones(data.l_dim) + M_mat @ alpha
     bpessimistic.addConstr(slack_expr <= M1)
+    # complementary slackness - y[j] == 0 if beta[j] == 0 added individually
+    for j in range(data.m_dim):
+        bpessimistic.addConstr(y[j] <= data.M * beta[j])
+    slack_expr = np.transpose(data.D) @ gamma - data.g
+    M_mat = np.eye(data.m_dim) * data.M
+    M2 = -M_mat @ np.ones(data.m_dim) + M_mat @ beta
     bpessimistic.addConstr(slack_expr >= M2)
     bpessimistic.update()
     bpessimistic.write("bpessimistic.lp")
     bpessimistic.optimize()
-    print_solution(bpessimistic, data, x, y)
-    pass
+    print_solution(bpessimistic, data, x, ybar)
 
 def solve_wrabetz_pessimistic(model_data):
     # Constructed assuming x, y have non-negativity constraints.
@@ -208,7 +289,7 @@ def solve_wrabetz_pessimistic(model_data):
     alpha = wpessimistic.addMVar(data.l_dim, vtype=GRB.BINARY, name="alpha")
     wpessimistic.addConstr(data.C @ x + data.D @ y >= data.b)
     wpessimistic.addConstr(data.D.transpose() @ lam <= data.g)
-    # complimentary slackness - lam[i] == 0 if alpha[i] == 0 added individually
+    # complementary slackness - lam[i] == 0 if alpha[i] == 0 added individually
     for i in range(data.l_dim):
         wpessimistic.addConstr(lam[i] <= data.M * alpha[i])
         wpessimistic.addConstr(lam[i] >= -data.M * alpha[i])
@@ -225,12 +306,10 @@ def solve_wrabetz_pessimistic(model_data):
     pass
 
 def main():
-    example = ModelData()
     beck = return_beck_example()
-    solve_nominal(beck)
-    beck.log_data()
-    P = []
-    #solve_beck_optimistic(example, P)
+    simple = return_beck_simple()
+    P1 = return_P(simple.n_dim, 1)
+    solve_beck_pessimistic(simple, P1)
 
 if __name__=="__main__":
     main()
