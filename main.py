@@ -74,6 +74,38 @@ class ModelData:
         print("C:", self.C)
         print("D:", self.D)
         print("b:", self.b)
+        print("\n\n")
+
+        print("c:", self.c.shape)
+        print("d:", self.d.shape)
+        print("A:", self.A.shape)
+        print("B:", self.B.shape)
+        print("a:", self.a.shape)
+        print("f:", self.f.shape)
+        print("g:", self.g.shape)
+        print("C:", self.C.shape)
+        print("D:", self.D.shape)
+        print("b:", self.b.shape)
+
+def generate_data(n=1, m=2, k=2, l=2):
+    # Return random instance.
+    # f is set to 0s.
+    # C must be nonnegative.
+    return ModelData(n_dim=n,
+                  c=np.random.default_rng().normal(0, 5, size=(n,)),
+                  f=np.zeros(shape=(n,)),
+                  m_dim=m,
+                  d=np.random.default_rng().normal(0, 5, size=(m,)),
+                  g=np.random.default_rng().normal(0, 5, size=(m,)),
+                  k_dim=k,
+                  A=np.random.default_rng().normal(0, 5, size=(k, n)),
+                  B=np.random.default_rng().normal(0, 5, size=(k, m)),
+                  a=np.random.default_rng().normal(0, 5, size=(k,)),
+                  l_dim=l,
+                  C=np.random.default_rng().normal(0, 5, size=(l, n)),
+                  D=np.random.default_rng().normal(0, 5, size=(l, m)),
+                  b=np.random.default_rng().normal(0, 5, size=(l,)),
+                  M=50)
 
 def return_beck_example():
     # Return an instance matching Example 1 in the Beck paper.
@@ -94,7 +126,6 @@ def return_beck_example():
                   M=50)
 
 def return_beck_simple():
-    # Return an instance matching Example 1 in the Beck paper.
     return ModelData(n_dim=1,
                   c=np.array([1]),
                   f=np.array([0]),
@@ -105,6 +136,24 @@ def return_beck_simple():
                   A=np.array([[1], [-1]]),
                   B=np.array([[-4], [-2]]),
                   a=np.array([-11, -13]),
+                  l_dim=1,
+                  C=np.array([[2]]),
+                  D=np.array([[1]]),
+                  b=np.array([5]),
+                  M=50)
+
+def return_pess_simple():
+    # Not ready still playing
+    return ModelData(n_dim=1,
+                  c=np.array([1]),
+                  f=np.array([0]),
+                  m_dim=1,
+                  d=np.array([-10]),
+                  g=np.array([-1]),
+                  k_dim=2,
+                  A=np.array([[0], [-1]]),
+                  B=np.array([[-1], [-2]]),
+                  a=np.array([-4, -13]),
                   l_dim=1,
                   C=np.array([[2]]),
                   D=np.array([[1]]),
@@ -362,9 +411,15 @@ def solve_wrabetz_pessimistic(data, P):
             print_solution(wpessimistic, data, x, ybar)
 
 def main():
-    beck = return_beck_example()
     simple = return_beck_simple()
+    simple.log_data()
+    data = generate_data()
+    data.log_data()
     P1 = return_P(simple.n_dim, 1)
+    solve_nominal(data)
+    solve_beck_optimistic(data, P1)
+    solve_beck_pessimistic(data, P1)
+    solve_wrabetz_pessimistic(data, P1)
     solve_nominal(simple)
     solve_beck_optimistic(simple, P1)
     solve_beck_pessimistic(simple, P1)
